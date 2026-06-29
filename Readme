@@ -1,0 +1,516 @@
+# EZTRACKLY Backend - FastAPI + MongoDB
+
+Complete backend for the EZTRACKLY task management and dashboard application.
+
+## Features
+
+- ✅ **Task Management**: Create, update, delete, and manage tasks
+- ✅ **Dashboard Analytics**: Comprehensive dashboard with statistics and insights
+- ✅ **Task Filtering**: Filter by status, priority, due date, etc.
+- ✅ **RESTful API**: Clean and well-documented REST API
+- ✅ **MongoDB Integration**: Persistent data storage with MongoDB
+- ✅ **CORS Support**: Cross-origin resource sharing for frontend integration
+- ✅ **Docker Support**: Easy deployment with Docker and Docker Compose
+- ✅ **Comprehensive Logging**: Built-in logging for debugging
+- ✅ **Error Handling**: Proper error handling and validation
+
+## Project Structure
+
+```
+eztrackly-backend/
+├── main.py                    # FastAPI application entry point
+├── config.py                  # Configuration management
+├── mongodb.py                 # MongoDB connection and setup
+├── task_models.py            # Pydantic models for tasks
+├── dashboard_models.py       # Pydantic models for dashboard
+├── task_crud.py              # CRUD operations for tasks
+├── task_endpoints.py         # API endpoints for tasks
+├── dashboard_endpoints.py    # API endpoints for dashboard
+├── requirements.txt          # Python dependencies
+├── .env.example             # Example environment variables
+├── Dockerfile               # Docker build configuration
+├── docker-compose.yml       # Docker Compose setup
+└── README.md               # This file
+```
+
+## Installation
+
+### Prerequisites
+
+- Python 3.11+
+- MongoDB 4.4+
+- Docker & Docker Compose (optional)
+
+### Method 1: Local Installation
+
+1. **Clone the repository**
+   ```bash
+   cd eztrackly-backend
+   ```
+
+2. **Create virtual environment**
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Configure environment**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your configuration
+   ```
+
+5. **Start MongoDB** (if not running)
+   ```bash
+   # Using Docker
+   docker run -d -p 27017:27017 mongo:latest
+   
+   # Or using your local MongoDB installation
+   mongod
+   ```
+
+6. **Run the application**
+   ```bash
+   python main.py
+   # or
+   uvicorn main:app --reload
+   ```
+
+Access the API at `http://localhost:8000`
+API Documentation: `http://localhost:8000/docs`
+
+### Method 2: Docker Installation
+
+1. **Clone the repository**
+   ```bash
+   cd eztrackly-backend
+   ```
+
+2. **Configure environment**
+   ```bash
+   cp .env.example .env
+   ```
+
+3. **Start with Docker Compose**
+   ```bash
+   docker-compose up -d
+   ```
+
+This will start:
+- FastAPI backend on `http://localhost:8000`
+- MongoDB on `localhost:27017`
+- MongoDB Express on `http://localhost:8081` (optional database management)
+
+Access the API documentation at `http://localhost:8000/docs`
+
+## Environment Configuration
+
+Edit `.env` file to configure:
+
+```env
+# MongoDB
+MONGODB_URL=mongodb://localhost:27017
+DATABASE_NAME=eztrackly_db
+
+# JWT (for future auth implementation)
+SECRET_KEY=your-secret-key
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+# API
+DEBUG=True
+CORS_ORIGINS=["http://localhost:3000"]
+
+# Server
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8000
+```
+
+## API Endpoints
+
+### Tasks API
+
+#### Create Task
+```http
+POST /api/v1/tasks
+Content-Type: application/json
+
+{
+  "title": "Create dashboard page",
+  "description": "Design and implement dashboard UI",
+  "priority": "high",
+  "due_date": "2025-06-30T17:00:00",
+  "category": "Frontend"
+}
+```
+
+#### Get All Tasks
+```http
+GET /api/v1/tasks
+```
+
+#### Get Task by ID
+```http
+GET /api/v1/tasks/{task_id}
+```
+
+#### Get Tasks by Status
+```http
+GET /api/v1/tasks?status=pending
+```
+
+#### Update Task
+```http
+PUT /api/v1/tasks/{task_id}
+Content-Type: application/json
+
+{
+  "title": "Updated title",
+  "priority": "medium"
+}
+```
+
+#### Update Task Status
+```http
+PATCH /api/v1/tasks/{task_id}/status
+Content-Type: application/json
+
+{
+  "status": "in_progress"
+}
+```
+
+#### Mark Task as Done
+```http
+POST /api/v1/tasks/{task_id}/mark-done
+Content-Type: application/json
+
+{
+  "completion_remarks": "Task completed successfully"
+}
+```
+
+#### Delete Task
+```http
+DELETE /api/v1/tasks/{task_id}
+```
+
+### Dashboard API
+
+#### Get Full Dashboard
+```http
+GET /api/v1/dashboard?username=Sahil
+```
+
+Response includes:
+- Dashboard greeting
+- Statistics (total, pending, in-progress, completed, overdue)
+- Due today tasks
+- Upcoming tasks
+- Recently completed tasks
+
+#### Get Dashboard Stats Only
+```http
+GET /api/v1/dashboard/stats
+```
+
+#### Get Tasks by Status
+```http
+GET /api/v1/dashboard/tasks-by-status
+```
+
+#### Get Completion Metrics
+```http
+GET /api/v1/dashboard/completion-metrics
+```
+
+#### Get Priority Breakdown
+```http
+GET /api/v1/dashboard/priority-breakdown
+```
+
+#### Get Upcoming Deadlines
+```http
+GET /api/v1/dashboard/upcoming-deadlines
+```
+
+#### Get Dashboard Summary
+```http
+GET /api/v1/dashboard/summary
+```
+
+## Data Models
+
+### Task Model
+
+```python
+{
+  "_id": "ObjectId",
+  "title": "Task title",
+  "description": "Task description",
+  "status": "pending|in_progress|done|cancelled",
+  "priority": "low|medium|high|urgent",
+  "due_date": "2025-06-30T17:00:00",
+  "assigned_to": "self",
+  "assigned_by": "self",
+  "category": "Category name",
+  "completion_remarks": "Remarks on completion",
+  "created_at": "2025-06-24T10:00:00",
+  "completed_at": "2025-06-24T15:00:00"
+}
+```
+
+### Dashboard Response
+
+```json
+{
+  "greeting": "Good morning",
+  "username": "Sahil",
+  "online_status": true,
+  "stats": {
+    "total_tasks": 25,
+    "pending_tasks": 5,
+    "in_progress_tasks": 3,
+    "completed_tasks": 15,
+    "overdue_tasks": 2,
+    "today_due_count": 3
+  },
+  "due_today": {
+    "count": 3,
+    "tasks": [...]
+  },
+  "upcoming": {
+    "count": 6,
+    "tasks": [...]
+  },
+  "recently_completed": {
+    "count": 5,
+    "tasks": [...]
+  },
+  "generated_at": "2025-06-24T10:00:00"
+}
+```
+
+## MongoDB Collections
+
+### tasks
+Stores all task documents with indexes on:
+- `assigned_to`
+- `status`
+- `priority`
+- `due_date`
+- `created_at`
+- `completed_at`
+- Composite: `(assigned_to, status)`
+
+### users
+Stores user information with unique indexes on:
+- `email`
+- `username`
+
+## Testing
+
+### Manual Testing with cURL
+
+```bash
+# Create a task
+curl -X POST http://localhost:8000/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Test task", "priority": "high"}'
+
+# Get all tasks
+curl http://localhost:8000/api/v1/tasks
+
+# Get dashboard
+curl http://localhost:8000/api/v1/dashboard?username=Sahil
+```
+
+### Using Python Requests
+
+```python
+import requests
+
+BASE_URL = "http://localhost:8000"
+
+# Create task
+response = requests.post(
+    f"{BASE_URL}/api/v1/tasks",
+    json={"title": "New task", "priority": "high"}
+)
+print(response.json())
+
+# Get dashboard
+response = requests.get(f"{BASE_URL}/api/v1/dashboard")
+print(response.json())
+```
+
+## Integration with Frontend
+
+Update your Next.js frontend to use the backend API:
+
+```javascript
+// lib/api.js
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+export async function fetchDashboard(username = 'Sahil') {
+  const response = await fetch(`${API_BASE_URL}/api/v1/dashboard?username=${username}`);
+  return response.json();
+}
+
+export async function createTask(taskData) {
+  const response = await fetch(`${API_BASE_URL}/api/v1/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(taskData),
+  });
+  return response.json();
+}
+
+export async function updateTaskStatus(taskId, status) {
+  const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
+  return response.json();
+}
+```
+
+## API Documentation
+
+Access interactive API documentation:
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
+- **OpenAPI Schema**: `http://localhost:8000/openapi.json`
+
+## Deployment
+
+### Deployment on AWS
+
+1. **Build Docker image**
+   ```bash
+   docker build -t eztrackly-backend:latest .
+   ```
+
+2. **Push to ECR**
+   ```bash
+   aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <account-id>.dkr.ecr.us-east-1.amazonaws.com
+   docker tag eztrackly-backend:latest <account-id>.dkr.ecr.us-east-1.amazonaws.com/eztrackly-backend:latest
+   docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/eztrackly-backend:latest
+   ```
+
+3. **Deploy using ECS, App Runner, or Elastic Beanstalk**
+
+### Deployment on Heroku
+
+1. **Create Heroku app**
+   ```bash
+   heroku create eztrackly-backend
+   ```
+
+2. **Add MongoDB Atlas add-on**
+   ```bash
+   heroku addons:create mongolab:sandbox
+   ```
+
+3. **Deploy**
+   ```bash
+   git push heroku main
+   ```
+
+## Troubleshooting
+
+### MongoDB Connection Issues
+
+```bash
+# Check if MongoDB is running
+mongosh
+
+# Verify connection string in .env
+MONGODB_URL=mongodb://localhost:27017
+```
+
+### Port Already in Use
+
+```bash
+# Find process using port 8000
+lsof -i :8000
+
+# Kill process
+kill -9 <PID>
+```
+
+### CORS Issues
+
+Update `cors_origins` in `.env`:
+```env
+CORS_ORIGINS=["http://localhost:3000", "http://your-domain.com"]
+```
+
+## Performance Optimization
+
+- Database indexes are created automatically
+- Implement pagination for large datasets
+- Cache dashboard statistics
+- Use connection pooling for MongoDB
+- Add caching headers for GET requests
+
+## Security Considerations
+
+1. Change `SECRET_KEY` in production
+2. Use environment variables for sensitive data
+3. Implement rate limiting
+4. Add authentication/authorization
+5. Validate and sanitize all inputs
+6. Use HTTPS in production
+7. Implement CSRF protection
+
+## Future Enhancements
+
+- [ ] User authentication with JWT
+- [ ] Role-based access control
+- [ ] Real-time notifications
+- [ ] Task comments and collaboration
+- [ ] File attachments
+- [ ] Task templates
+- [ ] Advanced filtering and search
+- [ ] Analytics dashboard
+- [ ] Export to PDF/CSV
+- [ ] Webhook integrations
+
+## Contributing
+
+1. Create a feature branch
+2. Make your changes
+3. Test thoroughly
+4. Submit a pull request
+
+## License
+
+MIT License - See LICENSE file for details
+
+## Support
+
+For issues and questions:
+1. Check the documentation
+2. Review existing issues
+3. Create a new issue with detailed information
+
+## Changelog
+
+### v1.0.0 (2025-06-24)
+- Initial release
+- Task CRUD operations
+- Dashboard analytics
+- MongoDB integration
+- Docker support
+- API documentation
+
+---
+
+**Built with ❤️ using FastAPI and MongoDB**
