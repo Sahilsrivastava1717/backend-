@@ -1,6 +1,6 @@
 """
 Document Endpoints
-Upload files or save links — shared across the team
+Upload files or save links — shared across the team (domain-scoped)
 """
 from fastapi import APIRouter, HTTPException, status, Depends, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse
@@ -29,10 +29,20 @@ def serialize(doc: dict) -> dict:
     return doc
 
 
+def extract_domain(email: str) -> str:
+    """Extract domain from email — e.g. 'sahil@ezsignly.com' → 'ezsignly.com'"""
+    return email.split("@")[-1].lower() if "@" in email else ""
+
+
 @router.get("", response_model=DocumentListResponse)
 async def list_documents(current_user: dict = Depends(get_current_user)):
+    """Return only documents uploaded by members of the same email domain."""
+    domain = extract_domain(current_user.get("email", ""))
+    if not domain:
+        return {"documents": [], "total": 0}
+
     col = get_docs_collection()
-    docs = list(col.find().sort("created_at", -1))
+    docs = list(col.find({"domain": domain}).sort("created_at", -1))
     docs = [serialize(d) for d in docs]
     return {"documents": docs, "total": len(docs)}
 
@@ -62,6 +72,9 @@ async def upload_document(
         "link_url": None,
         "uploaded_by": current_user["id"],
         "uploader_name": current_user.get("full_name") or current_user.get("username"),
+        # Scope this document to the uploader's email domain so only
+        # same-domain members can see it.
+        "domain": extract_domain(current_user.get("email", "")),
         "created_at": now,
     }
     result = col.insert_one(doc)
@@ -88,6 +101,8 @@ async def save_link(
         "link_url": link_url,
         "uploaded_by": current_user["id"],
         "uploader_name": current_user.get("full_name") or current_user.get("username"),
+        # Same domain scoping as file uploads.
+        "domain": extract_domain(current_user.get("email", "")),
         "created_at": now,
     }
     result = col.insert_one(doc)
@@ -99,7 +114,6 @@ async def save_link(
 # ── File download — accepts token as query param ──────────────────────────────
 @router.get("/file/{filename}")
 async def get_file(filename: str, token: Optional[str] = Query(None)):
-    # Validate token from query param
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
@@ -137,8 +151,13 @@ async def delete_document(doc_id: str, current_user: dict = Depends(get_current_
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    # Only the uploader can delete their document
     if doc["uploaded_by"] != current_user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized to delete this document")
+
+    # Verify the requesting user is from the same domain (extra safety check)
+    if doc.get("domain") and doc["domain"] != extract_domain(current_user.get("email", "")):
+        raise HTTPException(status_code=403, detail="Not authorized")
 
     if doc.get("file_url"):
         fname = doc["file_url"].split("/")[-1]

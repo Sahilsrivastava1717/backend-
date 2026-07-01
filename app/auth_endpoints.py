@@ -20,6 +20,32 @@ from app.config import settings
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
+def _to_user_response(user: dict) -> UserResponse:
+    """Build a UserResponse from a raw Mongo user document, defaulting
+    any extended profile fields that aren't set yet."""
+    return UserResponse(
+        id=user["id"],
+        username=user["username"],
+        email=user["email"],
+        full_name=user.get("full_name"),
+        created_at=user["created_at"],
+        is_active=user.get("is_active", True),
+        personal_email=user.get("personal_email"),
+        phone=user.get("phone"),
+        date_of_birth=user.get("date_of_birth"),
+        gender=user.get("gender"),
+        job_title=user.get("job_title"),
+        designation=user.get("designation"),
+        company=user.get("company"),
+        address=user.get("address"),
+        bio=user.get("bio"),
+        avatar_url=user.get("avatar_url"),
+        emergency_contact_name=user.get("emergency_contact_name"),
+        emergency_contact_phone=user.get("emergency_contact_phone"),
+        emergency_contact_relation=user.get("emergency_contact_relation"),
+    )
+
+
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(data: UserRegister):
     """Register a new user"""
@@ -47,6 +73,20 @@ async def register(data: UserRegister):
         "password_hash": hash_password(data.password),
         "is_active": True,
         "created_at": datetime.utcnow(),
+        # Extended profile fields default to None until the user fills them in
+        "personal_email": None,
+        "phone": None,
+        "date_of_birth": None,
+        "gender": None,
+        "job_title": None,
+        "designation": None,
+        "company": None,
+        "address": None,
+        "bio": None,
+        "avatar_url": None,
+        "emergency_contact_name": None,
+        "emergency_contact_phone": None,
+        "emergency_contact_relation": None,
     }
 
     result = collection.insert_one(user_doc)
@@ -95,20 +135,11 @@ async def login(data: UserLogin):
     access_token = create_access_token(token_data)
     refresh_token = create_refresh_token(token_data)
 
-    user_response = UserResponse(
-        id=user["id"],
-        username=user["username"],
-        email=user["email"],
-        full_name=user.get("full_name"),
-        created_at=user["created_at"],
-        is_active=user.get("is_active", True),
-    )
-
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
         expires_in=settings.access_token_expire_minutes * 60,
-        user=user_response,
+        user=_to_user_response(user),
     )
 
 
@@ -136,34 +167,18 @@ async def refresh_token(data: RefreshTokenRequest):
     access_token = create_access_token(token_data)
     new_refresh_token = create_refresh_token(token_data)
 
-    user_response = UserResponse(
-        id=user["id"],
-        username=user["username"],
-        email=user["email"],
-        full_name=user.get("full_name"),
-        created_at=user["created_at"],
-        is_active=user.get("is_active", True),
-    )
-
     return TokenResponse(
         access_token=access_token,
         refresh_token=new_refresh_token,
         expires_in=settings.access_token_expire_minutes * 60,
-        user=user_response,
+        user=_to_user_response(user),
     )
 
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: dict = Depends(get_current_user)):
     """Get current logged in user profile"""
-    return UserResponse(
-        id=current_user["id"],
-        username=current_user["username"],
-        email=current_user["email"],
-        full_name=current_user.get("full_name"),
-        created_at=current_user["created_at"],
-        is_active=current_user.get("is_active", True),
-    )
+    return _to_user_response(current_user)
 
 
 @router.put("/me", response_model=UserResponse)
@@ -187,6 +202,20 @@ async def update_profile(
             )
         update_data["username"] = data.username
 
+    # ── Extended profile fields ──
+    # Use exclude_unset so fields the client didn't send aren't overwritten
+    # with None, but fields explicitly sent (even empty string) do get saved.
+    extended_fields = data.dict(
+        exclude_unset=True,
+        include={
+            "personal_email", "phone", "date_of_birth", "gender",
+            "job_title", "designation", "address", "bio",
+            "emergency_contact_name", "emergency_contact_phone",
+            "emergency_contact_relation",
+        },
+    )
+    update_data.update(extended_fields)
+
     if update_data:
         from bson import ObjectId
         collection.update_one(
@@ -195,14 +224,7 @@ async def update_profile(
         )
 
     updated_user = get_user_by_id(current_user["id"])
-    return UserResponse(
-        id=updated_user["id"],
-        username=updated_user["username"],
-        email=updated_user["email"],
-        full_name=updated_user.get("full_name"),
-        created_at=updated_user["created_at"],
-        is_active=updated_user.get("is_active", True),
-    )
+    return _to_user_response(updated_user)
 
 
 @router.post("/change-password")

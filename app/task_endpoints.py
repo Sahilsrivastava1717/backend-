@@ -12,7 +12,33 @@ router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 async def create_task(task: TaskCreate, current_user: dict = Depends(get_current_user)):
-    return TaskCRUD.create_task(task, user_id=current_user["id"])
+    """
+    Create a task.
+    - assigned_by is always forced to the authenticated user.
+    - assigned_to uses the teammate real id sent by frontend, or falls back to self.
+    """
+    from app.mongodb import get_tasks_collection
+    from datetime import datetime
+
+    collection = get_tasks_collection()
+    task_dict = task.model_dump()
+
+    # Always stamp who created/assigned it
+    task_dict["assigned_by"] = current_user["id"]
+
+    # "self" or missing → assign to creator; otherwise keep the real teammate id
+    raw = task_dict.get("assigned_to")
+    if not raw or raw == "self":
+        task_dict["assigned_to"] = current_user["id"]
+
+    task_dict["created_at"] = datetime.utcnow()
+    task_dict["completed_at"] = None
+    task_dict["completion_remarks"] = None
+
+    result = collection.insert_one(task_dict)
+    task_dict["id"] = str(result.inserted_id)
+    task_dict.pop("_id", None)
+    return task_dict
 
 
 @router.get("", response_model=TaskListResponse)
@@ -22,11 +48,25 @@ async def list_tasks(
     task_status: Optional[TaskStatus] = Query(None),
     current_user: dict = Depends(get_current_user)
 ):
+    """Tasks assigned TO the current user (their own inbox)."""
     user_id = current_user["id"]
     if task_status:
         tasks = TaskCRUD.get_tasks_by_status(task_status, user_id=user_id)
     else:
         tasks = TaskCRUD.get_user_tasks(user_id=user_id, skip=skip, limit=limit)
+    return {"tasks": tasks, "total": len(tasks)}
+
+
+@router.get("/assigned-by-me", response_model=TaskListResponse)
+async def list_tasks_assigned_by_me(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    current_user: dict = Depends(get_current_user)
+):
+    """Tasks the current user delegated to someone else."""
+    tasks = TaskCRUD.get_tasks_assigned_by_me(
+        user_id=current_user["id"], skip=skip, limit=limit
+    )
     return {"tasks": tasks, "total": len(tasks)}
 
 
@@ -61,7 +101,7 @@ async def get_task(task_id: str, current_user: dict = Depends(get_current_user))
     task = TaskCRUD.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    if task.get("assigned_to") != current_user["id"]:
+    if task.get("assigned_to") != current_user["id"] and task.get("assigned_by") != current_user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
     return task
 
@@ -71,7 +111,7 @@ async def update_task(task_id: str, task: TaskUpdate, current_user: dict = Depen
     existing = TaskCRUD.get_task(task_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
-    if existing.get("assigned_to") != current_user["id"]:
+    if existing.get("assigned_by") != current_user["id"] and existing.get("assigned_to") != current_user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
     return TaskCRUD.update_task(task_id, task)
 
@@ -81,7 +121,7 @@ async def update_status(task_id: str, status_update: TaskStatusUpdate, current_u
     existing = TaskCRUD.get_task(task_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
-    if existing.get("assigned_to") != current_user["id"]:
+    if existing.get("assigned_to") != current_user["id"] and existing.get("assigned_by") != current_user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
     return TaskCRUD.update_task_status(task_id, status_update.status)
 
@@ -91,12 +131,11 @@ async def mark_done(task_id: str, data: TaskMarkDone, current_user: dict = Depen
     existing = TaskCRUD.get_task(task_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
-    if existing.get("assigned_to") != current_user["id"]:
+    if existing.get("assigned_to") != current_user["id"] and existing.get("assigned_by") != current_user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
-    
+
     result = TaskCRUD.mark_task_done(task_id, data.completion_remarks)
 
-    # ── Award XP for completing the task ──
     from datetime import datetime
     from app.mongodb import get_db
     from app.xp_utils import xp_for_task
@@ -122,6 +161,7 @@ async def delete_task(task_id: str, current_user: dict = Depends(get_current_use
     existing = TaskCRUD.get_task(task_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
-    if existing.get("assigned_to") != current_user["id"]:
+    # Only the assigner can delete
+    if existing.get("assigned_by") != current_user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
     TaskCRUD.delete_task(task_id)

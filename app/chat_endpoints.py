@@ -92,12 +92,24 @@ def serialize_conv(conv, current_user_id, users_by_id):
 @router.get("/teammates")
 async def get_teammates(current_user: dict = Depends(get_current_user)):
     db = get_db()
+
+    # Dynamically match the current user's email domain so users only see
+    # teammates who registered with the same domain (e.g. gmail.com users see
+    # only gmail.com users, ezsignly.com users see only ezsignly.com users).
+    email = current_user.get("email", "")
+    domain = email.split("@")[-1] if "@" in email else None
+
+    if not domain:
+        return []
+
+    # Escape dots so they're treated as literal characters in the regex
+    escaped_domain = domain.replace(".", "\\.")
+
     users = list(db["users"].find({
-        "email": {"$regex": "@ezsignly\\.com$", "$options": "i"},
+        "email": {"$regex": f"@{escaped_domain}$", "$options": "i"},
         "_id": {"$ne": ObjectId(current_user["id"])}
     }))
     return [serialize_user(u) for u in users]
-
 
 # ── GET /conversations ─────────────────────────────────────────────────────────
 @router.get("/conversations")

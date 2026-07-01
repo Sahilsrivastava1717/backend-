@@ -25,6 +25,7 @@ class TaskCreate(BaseModel):
     priority: TaskPriority = TaskPriority.medium
     due_date: Optional[datetime] = None
     category: Optional[str] = None
+    assigned_to: Optional[str] = None  # real teammate user id or "self"
 
 
 class TaskUpdate(BaseModel):
@@ -52,6 +53,7 @@ class TaskResponse(BaseModel):
     priority: TaskPriority
     due_date: Optional[datetime] = None
     assigned_to: Optional[str] = None
+    assigned_to_name: Optional[str] = None   # enriched for delegated tasks
     assigned_by: Optional[str] = None
     completed_at: Optional[datetime] = None
     completion_remarks: Optional[str] = None
