@@ -60,7 +60,7 @@ async def refine_description(
         if data.description and data.description.strip():
             prompt = (
                 f'You are a task description editor. Improve and refine the following task description '
-                f'to be clearer, more actionable, and professional. Keep it concise (2-4 sentences max). '
+                f'to be clearer, more actionable, and professional. Keep it concise (50 characters max). '
                 f'No bullet points or markdown. Return only the refined description text, nothing else.\n\n'
                 f'Task title: "{data.title}"\n'
                 f'Current description: "{data.description}"'
@@ -68,14 +68,14 @@ async def refine_description(
         else:
             prompt = (
                 f'You are a task description writer. Write a clear, concise, and actionable description '
-                f'(2-4 sentences) for the following task. No bullet points or markdown. '
+                f'1 sentence for the following task. No bullet points or markdown. '
                 f'Return only the description text, nothing else.\n\n'
                 f'Task title: "{data.title}"'
             )
 
         message = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            max_tokens=300,
+            max_tokens=100,
             messages=[{"role": "user", "content": prompt}],
         )
         refined = message.choices[0].message.content.strip()

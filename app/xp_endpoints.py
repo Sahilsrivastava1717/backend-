@@ -78,6 +78,25 @@ def build_breakdown(events: list) -> dict:
         bd[t]["count"] += 1
     return bd
 
+def get_domain_scoped_users(current_user: dict) -> list:
+    """
+    Return only the users that share the current user's email domain
+    (e.g. ezsignly.com users see only ezsignly.com users, gmail.com users
+    see only gmail.com users), mirroring the scoping used for teammates
+    in chat_endpoints.get_teammates.
+    """
+    users_col = get_users_collection()
+
+    email = current_user.get("email", "")
+    domain = email.split("@")[-1] if "@" in email else None
+    if not domain:
+        return []
+
+    escaped_domain = domain.replace(".", "\\.")
+    return list(users_col.find({
+        "email": {"$regex": f"@{escaped_domain}$", "$options": "i"}
+    }))
+
 
 # ── Award XP (manual, admin or self) ─────────────────────────────────────────
 @router.post("/award", response_model=XPEventResponse, status_code=status.HTTP_201_CREATED)
@@ -148,11 +167,10 @@ async def leaderboard(
     current_user: dict = Depends(get_current_user),
 ):
     col = get_xp_collection()
-    users_col = get_users_collection()
     from_dt, to_dt, label = parse_period(period, custom_month)
 
-    # Get all users
-    users = list(users_col.find({}))
+    # Only users sharing the current user's email domain
+    users = get_domain_scoped_users(current_user)
 
     entries = []
     for u in users:
@@ -192,11 +210,11 @@ async def team_fairness(
     current_user: dict = Depends(get_current_user),
 ):
     col = get_xp_collection()
-    users_col = get_users_collection()
     tasks_col = get_db()["tasks"]
     from_dt, to_dt, label = parse_period(period, custom_month)
 
-    users = list(users_col.find({}))
+    # Only users sharing the current user's email domain
+    users = get_domain_scoped_users(current_user)
 
     # Group users by role (team)
     teams: dict = {}
