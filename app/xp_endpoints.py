@@ -78,6 +78,7 @@ def build_breakdown(events: list) -> dict:
         bd[t]["count"] += 1
     return bd
 
+
 def get_domain_scoped_users(current_user: dict) -> list:
     """
     Return only the users that share the current user's email domain

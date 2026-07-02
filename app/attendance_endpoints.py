@@ -9,7 +9,7 @@ from collections import defaultdict
 
 from app.auth_utils import get_current_user
 from app.mongodb import get_db
-from app.attendance_models import CheckInRequest, CheckOutRequest
+from app.attendance_models import CheckInRequest, CheckOutRequest, StandupRequest
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["attendance"])
 
@@ -200,6 +200,79 @@ async def checkout(
     active["checkout_note"]      = data.note
 
     return serialize_session(active)
+
+
+# ── POST /standup ────────────────────────────────────────────────────────────
+@router.post("/standup")
+async def submit_standup(
+    data: StandupRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Turn this morning's standup priorities into real Task documents so they
+    show up everywhere tasks are shown: My Tasks page, the WrapUp modal at
+    checkout, and TaskContext generally. Tasks are tagged source="standup"
+    so the WrapUp modal can identify them reliably (title-matching is
+    fragile — two tasks can share a title).
+
+    Resubmitting standup for the same day replaces the previous
+    not-yet-completed standup tasks instead of piling up duplicates.
+    """
+    db  = get_db()
+    uid = current_user["id"]
+
+    curr_ist      = now_ist()
+    day_start_utc = ist_day_start(curr_ist).replace(tzinfo=None)
+    day_end_utc   = ist_day_end(curr_ist).replace(tzinfo=None)
+    now_utc       = utcnow().replace(tzinfo=None)
+
+    tasks_col = db["tasks"]
+
+    # Clear out this user's earlier-today standup tasks that aren't done yet,
+    # so re-submitting the standup form doesn't create duplicates.
+    tasks_col.delete_many({
+        "assigned_to": uid,
+        "source": "standup",
+        "due_date": {"$gte": day_start_utc, "$lte": day_end_utc},
+        "status": {"$nin": ["done"]},
+    })
+
+    priorities = [p.strip() for p in data.priorities if p and p.strip()]
+
+    created = []
+    for title in priorities:
+        task_doc = {
+            "title": title,
+            "description": None,
+            "status": "pending",
+            "priority": "medium",
+            "due_date": day_end_utc,
+            "category": None,
+            "assigned_to": uid,
+            "assigned_by": uid,
+            "source": "standup",
+            "created_at": now_utc,
+            "completed_at": None,
+            "completion_remarks": None,
+        }
+        result = tasks_col.insert_one(task_doc)
+        task_doc["id"] = str(result.inserted_id)
+        task_doc.pop("_id", None)
+        created.append(task_doc)
+
+    # Record that standup was submitted today (used for XP / "missed standup" checks)
+    db["standups"].update_one(
+        {"user_id": uid, "ist_date": curr_ist.strftime("%Y-%m-%d")},
+        {"$set": {
+            "user_id": uid,
+            "ist_date": curr_ist.strftime("%Y-%m-%d"),
+            "priorities": priorities,
+            "submitted_at": now_utc,
+        }},
+        upsert=True,
+    )
+
+    return {"ok": True, "tasks": created}
 
 
 # ── GET /stats ─────────────────────────────────────────────────────────────────

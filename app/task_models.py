@@ -26,6 +26,7 @@ class TaskCreate(BaseModel):
     due_date: Optional[datetime] = None
     category: Optional[str] = None
     assigned_to: Optional[str] = None  # real teammate user id or "self"
+    source: Optional[str] = None       # None = manually created, "standup" = auto-created from morning standup
 
 
 class TaskUpdate(BaseModel):
@@ -58,6 +59,7 @@ class TaskResponse(BaseModel):
     completed_at: Optional[datetime] = None
     completion_remarks: Optional[str] = None
     category: Optional[str] = None
+    source: Optional[str] = None
     created_at: Optional[datetime] = None
 
     class Config:

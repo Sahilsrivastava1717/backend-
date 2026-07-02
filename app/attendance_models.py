@@ -1,6 +1,5 @@
-
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 
 class CheckInRequest(BaseModel):
@@ -12,3 +11,7 @@ class CheckInRequest(BaseModel):
 class CheckOutRequest(BaseModel):
     photo_url: Optional[str] = None
     note: Optional[str] = None
+
+
+class StandupRequest(BaseModel):
+    priorities: List[str] = []
