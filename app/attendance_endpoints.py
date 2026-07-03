@@ -84,9 +84,25 @@ async def get_today(current_user: dict = Depends(get_current_user)):
         "logout_at": None,
     })
 
+    # Day's earliest check-in — if the user checked out and back in again
+    # today, `session` above is only the *current* (possibly later) session,
+    # but the navbar's "In since" should reflect the same first-session time
+    # shown in the attendance table, not whichever session is active now.
+    first_session = db["attendance_sessions"].find_one(
+        {
+            **_user_filter(uid),
+            "login_at": {"$gte": day_start_utc, "$lte": day_end_utc},
+        },
+        sort=[("login_at", 1)],
+    )
+    first_login_at = None
+    if first_session:
+        first_login_ist = to_ist(first_session["login_at"])
+        first_login_at = first_login_ist.isoformat() if first_login_ist else None
+
     if not session:
-        return {"active": False, "session": None}
-    return {"active": True, "session": serialize_session(session)}
+        return {"active": False, "session": None, "first_login_at": first_login_at}
+    return {"active": True, "session": serialize_session(session), "first_login_at": first_login_at}
 
 
 # ── GET /sessions ──────────────────────────────────────────────────────────────

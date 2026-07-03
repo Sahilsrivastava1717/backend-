@@ -96,12 +96,61 @@ async def get_completed(
     return {"tasks": TaskCRUD.get_completed_tasks(user_id=current_user["id"], limit=limit)}
 
 
+@router.get("/team/overview")
+async def team_tasks_overview(current_user: dict = Depends(get_current_user)):
+    """All tasks across the domain, for admins. Includes assignee/assigner names."""
+    if not current_user.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from app.mongodb import get_db, get_users_collection
+    from bson import ObjectId
+
+    email = current_user.get("email", "")
+    domain = email.split("@")[-1] if "@" in email else None
+    users = []
+    if domain:
+        escaped = domain.replace(".", "\\.")
+        users = list(get_users_collection().find({"email": {"$regex": f"@{escaped}$", "$options": "i"}}))
+    user_ids = [str(u["_id"]) for u in users]
+    name_map = {
+        str(u["_id"]): (u.get("full_name") or u.get("username") or u.get("email", "").split("@")[0])
+        for u in users
+    }
+
+    tasks_col = get_db()["tasks"]
+    docs = list(tasks_col.find({"assigned_to": {"$in": user_ids}}).sort("created_at", -1).limit(500))
+
+    def to_dict(t):
+        return {
+            "id": str(t["_id"]),
+            "title": t.get("title", ""),
+            "description": t.get("description"),
+            "status": t.get("status", "pending"),
+            "priority": t.get("priority", "medium"),
+            "due_date": t.get("due_date"),
+            "completed_at": t.get("completed_at"),
+            "completion_remarks": t.get("completion_remarks"),
+            "created_at": t.get("created_at"),
+            "assigned_to": t.get("assigned_to"),
+            "assigned_to_name": name_map.get(t.get("assigned_to"), "Unknown"),
+            "assigned_by": t.get("assigned_by"),
+            "assigned_by_name": name_map.get(t.get("assigned_by"), "Unknown"),
+        }
+
+    return {
+        "tasks": [to_dict(t) for t in docs],
+        "users": [{"id": uid, "name": name_map[uid]} for uid in user_ids],
+    }
+
+
 @router.get("/{task_id}", response_model=TaskResponse)
 async def get_task(task_id: str, current_user: dict = Depends(get_current_user)):
     task = TaskCRUD.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    if task.get("assigned_to") != current_user["id"] and task.get("assigned_by") != current_user["id"]:
+    if (task.get("assigned_to") != current_user["id"]
+            and task.get("assigned_by") != current_user["id"]
+            and not current_user.get("is_admin", False)):
         raise HTTPException(status_code=403, detail="Not authorized")
     return task
 
@@ -111,7 +160,9 @@ async def update_task(task_id: str, task: TaskUpdate, current_user: dict = Depen
     existing = TaskCRUD.get_task(task_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
-    if existing.get("assigned_by") != current_user["id"] and existing.get("assigned_to") != current_user["id"]:
+    if (existing.get("assigned_by") != current_user["id"]
+            and existing.get("assigned_to") != current_user["id"]
+            and not current_user.get("is_admin", False)):
         raise HTTPException(status_code=403, detail="Not authorized")
     return TaskCRUD.update_task(task_id, task)
 
@@ -121,7 +172,9 @@ async def update_status(task_id: str, status_update: TaskStatusUpdate, current_u
     existing = TaskCRUD.get_task(task_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
-    if existing.get("assigned_to") != current_user["id"] and existing.get("assigned_by") != current_user["id"]:
+    if (existing.get("assigned_to") != current_user["id"]
+            and existing.get("assigned_by") != current_user["id"]
+            and not current_user.get("is_admin", False)):
         raise HTTPException(status_code=403, detail="Not authorized")
     return TaskCRUD.update_task_status(task_id, status_update.status)
 
@@ -131,7 +184,9 @@ async def mark_done(task_id: str, data: TaskMarkDone, current_user: dict = Depen
     existing = TaskCRUD.get_task(task_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
-    if existing.get("assigned_to") != current_user["id"] and existing.get("assigned_by") != current_user["id"]:
+    if (existing.get("assigned_to") != current_user["id"]
+            and existing.get("assigned_by") != current_user["id"]
+            and not current_user.get("is_admin", False)):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     result = TaskCRUD.mark_task_done(task_id, data.completion_remarks)
@@ -161,7 +216,7 @@ async def delete_task(task_id: str, current_user: dict = Depends(get_current_use
     existing = TaskCRUD.get_task(task_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
-    # Only the assigner can delete
-    if existing.get("assigned_by") != current_user["id"]:
+    # Only the assigner or an admin can delete
+    if existing.get("assigned_by") != current_user["id"] and not current_user.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Not authorized")
     TaskCRUD.delete_task(task_id)

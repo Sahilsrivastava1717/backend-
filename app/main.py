@@ -14,6 +14,7 @@ from app.content_endpoints import router as content_router
 from app.chat_endpoints import router as chat_router
 from app.attendance_endpoints import router as attendance_router
 from app.ai_endpoints import router as ai_router
+from app.lead_endpoints import router as lead_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ app.include_router(content_router)
 app.include_router(chat_router)
 app.include_router(attendance_router)
 app.include_router(ai_router)
+app.include_router(lead_router)
 
 
 

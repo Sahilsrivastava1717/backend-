@@ -43,6 +43,8 @@ def _to_user_response(user: dict) -> UserResponse:
         emergency_contact_name=user.get("emergency_contact_name"),
         emergency_contact_phone=user.get("emergency_contact_phone"),
         emergency_contact_relation=user.get("emergency_contact_relation"),
+        is_admin=user.get("is_admin", False),
+        role=user.get("role"),
     )
 
 
@@ -87,6 +89,8 @@ async def register(data: UserRegister):
         "emergency_contact_name": None,
         "emergency_contact_phone": None,
         "emergency_contact_relation": None,
+        "is_admin": False,
+        "role": None,
     }
 
     result = collection.insert_one(user_doc)
@@ -253,3 +257,23 @@ async def change_password(
 async def logout(current_user: dict = Depends(get_current_user)):
     """Logout (client should discard tokens)"""
     return {"message": "Logged out successfully"}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
