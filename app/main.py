@@ -15,6 +15,11 @@ from app.chat_endpoints import router as chat_router
 from app.attendance_endpoints import router as attendance_router
 from app.ai_endpoints import router as ai_router
 from app.lead_endpoints import router as lead_router
+from app.admin_attendance_endpoints import router as admin_attendance_router
+from app.users_endpoints import router as users_router
+from app.admin_profile import router as admin_profile_router
+from app.backlink_endpoints import router as backlink_router
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -54,7 +59,10 @@ app.include_router(chat_router)
 app.include_router(attendance_router)
 app.include_router(ai_router)
 app.include_router(lead_router)
-
+app.include_router(admin_attendance_router)
+app.include_router(users_router)
+app.include_router(admin_profile_router)
+app.include_router(backlink_router)
 
 
 @app.get("/")
