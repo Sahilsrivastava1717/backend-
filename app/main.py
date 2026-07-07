@@ -19,6 +19,9 @@ from app.admin_attendance_endpoints import router as admin_attendance_router
 from app.users_endpoints import router as users_router
 from app.admin_profile import router as admin_profile_router
 from app.backlink_endpoints import router as backlink_router
+from app.admin_content_endpoints import router as admin_content_router
+from app.admin_backlinks_endpoints import router as admin_backlinks_router
+from app.social_endpoints import router as social_router
 
 
 logging.basicConfig(level=logging.INFO)
@@ -63,6 +66,9 @@ app.include_router(admin_attendance_router)
 app.include_router(users_router)
 app.include_router(admin_profile_router)
 app.include_router(backlink_router)
+app.include_router(admin_content_router)
+app.include_router(admin_backlinks_router)
+app.include_router(social_router)
 
 
 @app.get("/")

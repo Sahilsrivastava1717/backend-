@@ -16,6 +16,11 @@ from app.content_models import (
 
 router = APIRouter(prefix="/api/v1/content", tags=["content"])
 
+def _log_activity(doc_id: str, user_id: str, type_: str, meta: dict = None):
+    get_db()["content_activity"].insert_one({
+        "document_id": doc_id, "user_id": user_id, "type": type_,
+        "meta": meta or {}, "created_at": datetime.utcnow(),
+    })
 
 def get_content_collection():
     return get_db()["content_documents"]
@@ -55,11 +60,11 @@ def build_starter_html(title: str, category: str, brief: str = None, platform: s
 # ── List documents ─────────────────────────────────────────────────────────────
 @router.get("", response_model=ContentListResponse)
 async def list_documents(
-    scope: str = Query("mine"),  # mine | all | review
+    scope: str = Query("mine"),
     category: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
-    sort_by: str = Query("updated"),  # updated | created | title | words
+    sort_by: str = Query("updated"),
     current_user: dict = Depends(get_current_user),
 ):
     col = get_content_collection()
@@ -72,7 +77,6 @@ async def list_documents(
     elif scope == "shared":
         query["share_enabled"] = True
         query["owner_id"] = {"$ne": current_user["id"]}
-    # "all" → no filter
 
     if category and category != "all":
         query["category"] = category
@@ -130,6 +134,7 @@ async def create_document(
     result = col.insert_one(doc)
     doc["id"] = str(result.inserted_id)
     doc.pop("_id", None)
+    _log_activity(doc["id"], current_user["id"], "created")
     return doc
 
 
@@ -168,6 +173,12 @@ async def update_document(
 
     col.update_one({"_id": ObjectId(doc_id)}, {"$set": update})
     updated = col.find_one({"_id": ObjectId(doc_id)})
+
+    if "status" in update:
+        _log_activity(doc_id, current_user["id"], "status_changed", {"status": update["status"]})
+    else:
+        _log_activity(doc_id, current_user["id"], "edited")
+
     return serialize(updated)
 
 
@@ -202,6 +213,7 @@ async def toggle_share(doc_id: str, current_user: dict = Depends(get_current_use
     new_val = not doc.get("share_enabled", False)
     col.update_one({"_id": ObjectId(doc_id)}, {"$set": {"share_enabled": new_val, "updated_at": datetime.utcnow()}})
     updated = col.find_one({"_id": ObjectId(doc_id)})
+    _log_activity(doc_id, current_user["id"], "shared" if new_val else "unshared")
     return serialize(updated)
 
 
@@ -222,4 +234,5 @@ async def update_status(
 
     col.update_one({"_id": ObjectId(doc_id)}, {"$set": {"status": new_status, "updated_at": datetime.utcnow()}})
     updated = col.find_one({"_id": ObjectId(doc_id)})
+    _log_activity(doc_id, current_user["id"], "status_changed", {"status": new_status})
     return serialize(updated)
