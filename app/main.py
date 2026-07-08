@@ -22,6 +22,12 @@ from app.backlink_endpoints import router as backlink_router
 from app.admin_content_endpoints import router as admin_content_router
 from app.admin_backlinks_endpoints import router as admin_backlinks_router
 from app.social_endpoints import router as social_router
+from app.admin_overview_endpoints import router as admin_overview_router
+from app.leaves_endpoints import router as leaves_router
+from app.team_settings_endpoints import router as team_settings_router
+
+
+
 
 
 logging.basicConfig(level=logging.INFO)
@@ -69,8 +75,9 @@ app.include_router(backlink_router)
 app.include_router(admin_content_router)
 app.include_router(admin_backlinks_router)
 app.include_router(social_router)
-
-
+app.include_router(admin_overview_router)
+app.include_router(leaves_router)
+app.include_router(team_settings_router)
 @app.get("/")
 async def root():
     return {"message": "Welcome to EZTRACKLY API", "docs": "/docs"}
