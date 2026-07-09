@@ -14,3 +14,4 @@ pytest==7.4.3
 pytest-asyncio==0.21.1
 motor==3.3.2
 pytz==2023.3
+google-auth-oauthlib google-api-python-client google-aut

@@ -124,6 +124,219 @@ def _fallback_headline(name: str, stats: dict) -> str:
         f"{stats['days_present']}/{stats['working_days']} days."
     )
 
+# ══════════════════════════════════════════════════════════════════════════════
+# AI Day Planner
+# ══════════════════════════════════════════════════════════════════════════════
+
+class PlanRequest(BaseModel):
+    user_id: str
+    date: str  # "YYYY-MM-DD"
+
+
+class PlannedTask(BaseModel):
+    title: str
+    description: str
+    rationale: str
+    category: str
+    priority: str  # high | medium | low
+    estimated_minutes: int
+
+
+class DayPlanResponse(BaseModel):
+    user_id: str
+    name: str
+    date: str
+    focus_theme: str
+    summary: str
+    insights: List[str]
+    tasks: List[PlannedTask]
+    ai_used: bool
+
+
+def _require_admin_ai(current_user: dict):
+    if not current_user.get("is_admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
+@router.post("/day-plan", response_model=DayPlanResponse)
+async def generate_day_plan(data: PlanRequest, current_user: dict = Depends(get_current_user)):
+    """Analyze a member's recent tasks/completion rate and suggest a focused
+    plan for the given date. Admin-only (mirrors the reference app)."""
+    _require_admin_ai(current_user)
+    from app.mongodb import get_db
+    from bson import ObjectId
+
+    db = get_db()
+    try:
+        member = db["users"].find_one({"_id": ObjectId(data.user_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid user id")
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    name = member.get("full_name") or member.get("username") or "Member"
+    role = member.get("role") or "sales"
+
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    fourteen_days_ago = now_utc - timedelta(days=14)
+
+    all_tasks = list(db["tasks"].find({"assigned_to": str(member["_id"])}))
+    recent_tasks = [
+        t for t in all_tasks
+        if t.get("created_at") and (t["created_at"] if not t["created_at"].tzinfo else t["created_at"].replace(tzinfo=None)) >= fourteen_days_ago
+    ]
+    completed_recent = [t for t in recent_tasks if t.get("status") == "done"]
+    active_tasks = [t for t in all_tasks if t.get("status") not in ("done", "cancelled")]
+    overdue_tasks = [
+        t for t in active_tasks
+        if t.get("due_date") and (t["due_date"] if not t["due_date"].tzinfo else t["due_date"].replace(tzinfo=None)) < now_utc
+    ]
+
+    completion_rate = round((len(completed_recent) / len(recent_tasks)) * 100) if recent_tasks else 0
+
+    # ── Heuristic insights ───────────────────────────────────────────────────
+    insights = []
+    if len(recent_tasks) == 0:
+        insights.append(f"Zero completion rate over last 14 days suggests a need for manageable, high-success tasks.")
+    elif completion_rate == 0:
+        insights.append(f"Zero completion rate over last 14 days suggests a need for manageable, high-success tasks.")
+    if len(active_tasks) == 0:
+        insights.append("Lack of open tasks indicates a fresh start or transition period.")
+    if overdue_tasks:
+        insights.append(f"{len(overdue_tasks)} overdue task{'s' if len(overdue_tasks) != 1 else ''} — prioritize clearing backlog before new work.")
+    if not insights:
+        insights.append("Focusing on environment and documentation first prevents mid-sprint blockers.")
+    insights = insights[:3]
+
+    role_templates = {
+        "developer": [
+            ("Local Development Environment Setup", "Configure local development environment, including IDE extensions, Docker containers, and environment variables.", "Ensures a functional workspace to prevent technical friction during coding tasks.", "Environment", "high", 90),
+            ("Verify Core System Boilerplate", "Execute the 'Hello World' equivalent of the current project, verifying database connectivity and API health checks.", "Verifies that the foundational architecture is operational before complex coding begins.", "Development", "high", 60),
+            ("Technical Spec and Requirements Review", "Read the latest project requirements, architectural diagrams, and API specifications.", "Aligns technical implementation with stakeholder expectations and design patterns.", "Documentation Review", "medium", 45),
+            ("Scaffold Feature Module Architecture", "Scaffold the first feature module (models and routes) based on the prioritized backlog.", "Starts the development cycle for the next major feature delivery.", "Development", "medium", 120),
+            ("Write Unit Tests for Core Utilities", "Add unit test coverage for shared utility functions and helpers.", "Reduces regression risk as new features are built on top of shared code.", "Testing", "low", 60),
+        ],
+        "seo": [
+            ("Keyword Gap Analysis", "Review top competitor pages for target keywords not yet covered.", "Surfaces quick-win content opportunities with existing search demand.", "Research", "high", 60),
+            ("Fix Broken Backlinks", "Check and resolve flagged broken/redirected backlinks from the tracker.", "Protects existing link equity and domain authority.", "Backlinks", "high", 45),
+            ("On-page Audit — Priority Pages", "Audit meta tags, headers, and internal linking on top-traffic pages.", "Improves ranking signals on pages already receiving organic traffic.", "Audit", "medium", 90),
+            ("Submit New Guest Post Pitches", "Draft and send 3 outreach pitches for guest posting opportunities.", "Builds pipeline for future high-authority backlinks.", "Outreach", "medium", 60),
+            ("Content Brief for Next Blog Post", "Prepare a keyword-optimized content brief for the content team.", "Keeps the content pipeline fed with SEO-driven topics.", "Content", "low", 45),
+        ],
+        "content_writer": [
+            ("Draft Blog Post from Content Calendar", "Write the next scheduled blog post based on the approved brief.", "Keeps publishing cadence on track for organic growth goals.", "Writing", "high", 120),
+            ("Revise Content Per Editor Feedback", "Apply outstanding review comments on drafts pending approval.", "Unblocks content stuck in the review stage.", "Editing", "high", 45),
+            ("Social Post Repurposing", "Turn the latest published article into 3 social media posts.", "Extends content reach without new research overhead.", "Social", "medium", 45),
+            ("SEO Pass on Draft", "Add meta description, alt text, and internal links to a draft.", "Improves discoverability of new content before publishing.", "SEO", "medium", 30),
+            ("Research Next Topic Cluster", "Identify 3-5 topic ideas aligned with current keyword strategy.", "Feeds the content calendar for the following weeks.", "Research", "low", 60),
+        ],
+        "sales": [
+            ("Follow Up on Warm Leads", "Call or email leads marked 'contacted' with no activity in 3+ days.", "Prevents warm leads from going cold due to lack of follow-up.", "Outreach", "high", 60),
+            ("Update CRM Pipeline Stages", "Review and correct stale lead statuses in the pipeline.", "Keeps reporting and forecasting accurate for the team.", "Admin", "medium", 30),
+            ("Prospect New Leads", "Research and add 10 new qualified leads matching ICP.", "Keeps the top of funnel filled for future conversions.", "Prospecting", "medium", 90),
+            ("Send Proposal to Hot Lead", "Prepare and send a tailored proposal to the highest-intent lead.", "Moves a near-close deal toward conversion.", "Closing", "high", 60),
+            ("Review Lost Deals This Month", "Note reasons for lost deals to refine future pitching.", "Improves win rate through pattern recognition.", "Analysis", "low", 30),
+        ],
+    }
+    templates = role_templates.get(role, role_templates["sales"])
+
+    if overdue_tasks:
+        tasks_out = [PlannedTask(
+            title=f"Clear overdue: {t.get('title', 'Untitled task')}",
+            description=t.get("description") or "Revisit and complete this overdue item.",
+            rationale="Clearing overdue work first prevents backlog compounding.",
+            category=t.get("category") or "Follow-up", priority="high", estimated_minutes=45,
+        ) for t in overdue_tasks[:2]]
+        remaining_slots = 5 - len(tasks_out)
+        tasks_out += [PlannedTask(title=t[0], description=t[1], rationale=t[2], category=t[3], priority=t[4], estimated_minutes=t[5]) for t in templates[:remaining_slots]]
+    else:
+        tasks_out = [PlannedTask(title=t[0], description=t[1], rationale=t[2], category=t[3], priority=t[4], estimated_minutes=t[5]) for t in templates]
+
+    focus_theme = "Development Foundation and Environment Setup" if role == "developer" else (
+        "Link Building and Technical SEO" if role == "seo" else
+        "Content Pipeline Momentum" if role == "content_writer" else
+        "Pipeline Follow-up and Prospecting"
+    )
+    summary_fallback = (
+        f"Since there are no active or overdue tasks, today is dedicated to establishing a stable "
+        f"foundation and initial scaffolding for {name.split(' ')[0]}'s next phase of work, building "
+        f"momentum after a period of inactivity."
+        if not active_tasks else
+        f"{name.split(' ')[0]} has {len(active_tasks)} active task{'s' if len(active_tasks) != 1 else ''} and "
+        f"{len(overdue_tasks)} overdue. Today prioritizes clearing blockers before moving to new work."
+    )
+
+    ai_used = False
+    focus_final, summary_final = focus_theme, summary_fallback
+
+    api_key = os.getenv("GROQ_API_KEY")
+    if api_key:
+        try:
+            from groq import Groq
+            client = Groq(api_key=api_key)
+            system = (
+                "You are a manager writing a one-paragraph daily focus summary for a team member's AI-suggested "
+                "day plan. Tone: clear, motivating, specific. Return ONLY valid JSON (no markdown) with keys: "
+                '{"focus_theme":"<3-6 word theme>","summary":"<2-3 sentence paragraph>"}'
+            )
+            user_msg = (
+                f"Member: {name}, role: {role}\n"
+                f"Active tasks: {len(active_tasks)}, overdue: {len(overdue_tasks)}\n"
+                f"Completion rate last 14 days: {completion_rate}%\n"
+                f"Planned task titles: {[t.title for t in tasks_out]}"
+            )
+            resp = client.chat.completions.create(
+                model="llama-3.3-70b-versatile", max_tokens=250,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user_msg}],
+            )
+            import json
+            raw = resp.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
+            parsed = json.loads(raw)
+            focus_final = parsed.get("focus_theme", focus_theme)
+            summary_final = parsed.get("summary", summary_fallback)
+            ai_used = True
+        except Exception as e:
+            print(f"Day plan AI error: {e}")
+
+    return DayPlanResponse(
+        user_id=str(member["_id"]), name=name, date=data.date,
+        focus_theme=focus_final, summary=summary_final,
+        insights=insights, tasks=tasks_out, ai_used=ai_used,
+    )
+
+
+class AssignTaskRequest(BaseModel):
+    user_id: str
+    date: str
+    task: PlannedTask
+
+
+@router.post("/day-plan/assign")
+async def assign_day_plan_task(data: AssignTaskRequest, current_user: dict = Depends(get_current_user)):
+    _require_admin_ai(current_user)
+    from app.mongodb import get_db
+
+    db = get_db()
+    due_date = datetime.strptime(f"{data.date} 18:00:00", "%Y-%m-%d %H:%M:%S")
+    doc = {
+        "title": data.task.title,
+        "description": f"{data.task.description}\n\n💡 {data.task.rationale}\n⏱ ~{data.task.estimated_minutes} min",
+        "assigned_to": data.user_id,
+        "assigned_by": current_user["id"],
+        "priority": data.task.priority,
+        "status": "pending",
+        "category": data.task.category,
+        "due_date": due_date,
+        "created_at": datetime.utcnow(),
+    }
+    result = db["tasks"].insert_one(doc)
+    db["notifications"].insert_one({
+        "user_id": data.user_id, "type": "task_assigned",
+        "title": "New task from your day plan", "message": data.task.title,
+        "link": "/myTasks", "data": {}, "read": False, "created_at": datetime.utcnow(),
+    })
+    return {"task_id": str(result.inserted_id), "message": "Task assigned"}
+
 
 @router.post("/weekly-summary", response_model=WeeklySummaryResponse)
 async def generate_weekly_summary(
