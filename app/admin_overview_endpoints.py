@@ -36,21 +36,25 @@ def _parse_last_seen(u: dict):
         return None
     if isinstance(ls, str):
         try:
-            return datetime.fromisoformat(ls.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(ls.replace("Z", "+00:00"))
         except Exception:
             return None
+        # fromisoformat can still return a naive datetime if the stored
+        # string had no offset at all — force UTC in that case.
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     if isinstance(ls, datetime):
         return ls if ls.tzinfo else ls.replace(tzinfo=timezone.utc)
     return None
 
 
 def _live_status(u: dict, active_session_ids: set, idle_min: int, inactive_min: int) -> str:
-    uid = str(u["_id"])
-    if uid not in active_session_ids:
-        return "offline"
+    """Presence is driven purely by the heartbeat (`last_seen`), independent
+    of attendance check-in — a logged-in user shows as online even if they
+    haven't punched in for the day. `active_session_ids` is accepted but no
+    longer used here; kept so call-sites don't need to change."""
     ls = _parse_last_seen(u)
     if not ls:
-        return "away"
+        return "offline"
     diff_min = (datetime.now(timezone.utc) - ls).total_seconds() / 60
     if diff_min <= idle_min:
         return "active"
@@ -59,7 +63,6 @@ def _live_status(u: dict, active_session_ids: set, idle_min: int, inactive_min: 
     if diff_min <= inactive_min:
         return "away"
     return "inactive"
-
 
 @router.get("")
 async def overview(current_user: dict = Depends(get_current_user)):

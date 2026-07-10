@@ -30,6 +30,7 @@ from app.meetings_endpoints import router as meetings_router
 from app.activities_endpoints import router as activities_router 
 from app.reports_endpoints import router as reports_router 
 from app.company_report_endpoints import router as company_report_router
+from app.Presence_endpoints import router as presence_router
 
 
 logging.basicConfig(level=logging.INFO)
@@ -85,6 +86,7 @@ app.include_router(meetings_router)
 app.include_router(activities_router)
 app.include_router(reports_router)
 app.include_router(company_report_router)
+app.include_router(presence_router)
 
 
 @app.get("/")
