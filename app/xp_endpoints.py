@@ -2,7 +2,7 @@
 XP & Leaderboard Endpoints
 """
 from fastapi import APIRouter, HTTPException, status, Depends, Query
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from bson import ObjectId
 
@@ -39,7 +39,6 @@ def parse_period(period: str, custom_month: Optional[str] = None):
         return now - timedelta(days=30), now, "Last 30 days"
     if period == "current_month":
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        # end of month
         if now.month == 12:
             end = now.replace(year=now.year + 1, month=1, day=1) - timedelta(seconds=1)
         else:
@@ -54,7 +53,6 @@ def parse_period(period: str, custom_month: Optional[str] = None):
         else:
             end = datetime(y, m + 1, 1) - timedelta(seconds=1)
         return start, end, start.strftime("%B %Y")
-    # fallback
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     return start, now, now.strftime("%B %Y")
 
@@ -77,6 +75,17 @@ def build_breakdown(events: list) -> dict:
         bd[t]["points"] += e["points"]
         bd[t]["count"] += 1
     return bd
+
+
+def _naive(dt):
+    """Normalize any datetime to naive UTC so comparisons never mix
+    aware/naive values (this was the actual cause of team-fairness 500s —
+    completed_at and due_date weren't consistently tz-aware or tz-naive)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 def get_domain_scoped_users(current_user: dict) -> list:
@@ -104,10 +113,8 @@ def get_domain_scoped_users(current_user: dict) -> list:
 async def award_xp(data: XPEventCreate, current_user: dict = Depends(get_current_user)):
     col = get_xp_collection()
 
-    # target user — default to self, admin can specify another user
     target_id = data.target_user_id or current_user["id"]
     if data.target_user_id and data.target_user_id != current_user["id"]:
-        # only allow if admin (add role check here if you have roles)
         target = get_user_by_id(data.target_user_id)
         if not target:
             raise HTTPException(status_code=404, detail="Target user not found")
@@ -136,11 +143,9 @@ async def my_xp(
     from_dt, to_dt, label = parse_period(period, custom_month)
     user_id = current_user["id"]
 
-    # Period events
     period_events = list(col.find(build_query(from_dt, to_dt, user_id)).sort("created_at", -1))
     period_xp = sum(e["points"] for e in period_events)
 
-    # All-time XP
     all_events = list(col.find({"user_id": user_id}))
     total_xp = sum(e["points"] for e in all_events)
 
@@ -170,18 +175,15 @@ async def leaderboard(
     col = get_xp_collection()
     from_dt, to_dt, label = parse_period(period, custom_month)
 
-    # Only users sharing the current user's email domain
     users = get_domain_scoped_users(current_user)
 
     entries = []
     for u in users:
         uid = str(u["_id"])
 
-        # Period XP
         period_events = list(col.find(build_query(from_dt, to_dt, uid)).sort("created_at", -1))
         period_xp = sum(e["points"] for e in period_events)
 
-        # All-time XP
         all_xp = sum(e["points"] for e in col.find({"user_id": uid}))
 
         breakdown = build_breakdown(period_events)
@@ -197,7 +199,6 @@ async def leaderboard(
             recents=recents,
         ))
 
-    # Sort by period XP desc, then total XP
     entries.sort(key=lambda x: (-x.period_xp, -x.total_xp))
 
     return LeaderboardResponse(entries=entries, period_label=label)
@@ -214,37 +215,41 @@ async def team_fairness(
     tasks_col = get_db()["tasks"]
     from_dt, to_dt, label = parse_period(period, custom_month)
 
-    # Only users sharing the current user's email domain
     users = get_domain_scoped_users(current_user)
 
-    # Group users by role (team)
     teams: dict = {}
     for u in users:
-        role = u.get("role", "unassigned")
+        # `.get("role", "unassigned")` only falls back when the key is
+        # *missing* — several users have "role": None stored explicitly,
+        # so .get returns None instead of the default, and that None was
+        # then flowing into TeamFairnessRow.team (str), a 500. `or` covers
+        # both "missing" and "present but falsy/None".
+        role = u.get("role") or "unassigned"
         if role not in teams:
             teams[role] = []
         teams[role].append(str(u["_id"]))
 
     rows = []
     for team, uids in teams.items():
-        # Tasks due in period
         task_query = {"assigned_to": {"$in": uids}}
         if from_dt and to_dt:
             task_query["due_date"] = {"$gte": from_dt, "$lte": to_dt}
         due_tasks = list(tasks_col.find(task_query))
 
+        # FIX: normalize both sides to naive UTC before comparing — mixing
+        # tz-aware and tz-naive datetimes here raised a TypeError that
+        # crashed this endpoint with a 500 ("Failed to load XP data").
         done_on_time = sum(
             1 for t in due_tasks
             if t.get("status") == "done"
             and t.get("completed_at")
             and t.get("due_date")
-            and t["completed_at"] <= t["due_date"]
+            and _naive(t["completed_at"]) <= _naive(t["due_date"])
         )
 
         total_due = len(due_tasks)
         rate = round((done_on_time / total_due * 100)) if total_due > 0 else 0
 
-        # Avg XP per member
         total_xp = 0
         for uid in uids:
             q = build_query(from_dt, to_dt, uid)

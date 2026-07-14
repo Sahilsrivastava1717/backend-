@@ -66,7 +66,7 @@ def _user_filter(uid: ObjectId) -> dict:
     (newly-stored) session is ever returned.
     """
     return {"$or": [{"user_id": uid}, {"user_id": str(uid)}]}
-
+    
 
 # ── GET /today ─────────────────────────────────────────────────────────────────
 @router.get("/today")
@@ -289,6 +289,56 @@ async def submit_standup(
     )
 
     return {"ok": True, "tasks": created}
+
+ #── POST /eod ─────────────────────────────────────────────────────────────────
+@router.post("/eod")
+async def submit_eod(
+    data: EODRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    WrapUpModal submission — was previously not saved anywhere at all, which
+    is why blockers/mood/completed never showed up on the Team Standup Feed.
+    Writes into the same `standups` doc submit_standup uses (one doc per
+    user per IST day), so a single doc holds both the morning priorities
+    and the evening recap.
+    """
+    db = get_db()
+    uid = current_user["id"]
+ 
+    curr_ist = now_ist()
+    now_utc = utcnow().replace(tzinfo=None)
+ 
+    completed = [c.strip() for c in data.completed if c and c.strip()]
+ 
+    if data.completed_task_ids:
+        from bson import ObjectId as OID
+        valid_ids = []
+        for tid in data.completed_task_ids:
+            try:
+                valid_ids.append(OID(tid))
+            except Exception:
+                continue
+        if valid_ids:
+            db["tasks"].update_many(
+                {"_id": {"$in": valid_ids}, "assigned_to": uid, "status": {"$ne": "done"}},
+                {"$set": {"status": "done", "completed_at": now_utc}},
+            )
+ 
+    db["standups"].update_one(
+        {"user_id": uid, "ist_date": curr_ist.strftime("%Y-%m-%d")},
+        {"$set": {
+            "user_id": uid,
+            "ist_date": curr_ist.strftime("%Y-%m-%d"),
+            "completed": completed,
+            "blockers": data.blockers.strip() if data.blockers else None,
+            "mood": data.mood,
+            "eod_submitted_at": now_utc,
+        }},
+        upsert=True,
+    )
+ 
+    return {"ok": True}
 
 
 # ── GET /stats ─────────────────────────────────────────────────────────────────

@@ -15,3 +15,9 @@ class CheckOutRequest(BaseModel):
 
 class StandupRequest(BaseModel):
     priorities: List[str] = []
+
+class EODRequest(BaseModel):
+    completed: list[str] = []
+    blockers: str = ""
+    mood: str = "good"
+    completed_task_ids: list[str] = []
