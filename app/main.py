@@ -32,6 +32,8 @@ from app.reports_endpoints import router as reports_router
 from app.company_report_endpoints import router as company_report_router
 from app.Presence_endpoints import router as presence_router
 from app.standup_feed_endpoints import router as standup_feed_router
+from app.team_hub_endpoints import router as team_hub_router
+from app.company_endpoints import router as company_router
 
 
 logging.basicConfig(level=logging.INFO)
@@ -89,6 +91,8 @@ app.include_router(reports_router)
 app.include_router(company_report_router)
 app.include_router(presence_router)
 app.include_router(standup_feed_router)
+app.include_router(team_hub_router)
+app.include_router(company_router)
 
 @app.get("/")
 async def root():
