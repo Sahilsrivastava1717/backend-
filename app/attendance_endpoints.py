@@ -1,5 +1,11 @@
 """
 Attendance Endpoints — Check-in/out with photo + IST time
+
+Auto-logout: if a user forgets to check out, their session is
+automatically closed after AUTO_LOGOUT_HOURS (9h) from login_at.
+The sweep runs on every read/write in this router, so /today, /sessions,
+/stats and a fresh /checkin attempt all see the closed session immediately
+— no separate cron/scheduler required.
 """
 from fastapi import APIRouter, HTTPException, Depends, Query
 from datetime import datetime, timedelta, timezone
@@ -9,11 +15,14 @@ from collections import defaultdict
 
 from app.auth_utils import get_current_user
 from app.mongodb import get_db
-from app.attendance_models import CheckInRequest, CheckOutRequest, StandupRequest
+from app.attendance_models import CheckInRequest, CheckOutRequest, StandupRequest, EODRequest
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["attendance"])
 
 IST = timezone(timedelta(hours=5, minutes=30))
+
+# ── Auto-logout config ───────────────────────────────────────────────────────
+AUTO_LOGOUT_HOURS = 9
 
 
 def now_ist():
@@ -55,6 +64,7 @@ def serialize_session(s):
         "checkin_note":        s.get("checkin_note"),
         "checkout_note":       s.get("checkout_note"),
         "is_active":           s.get("logout_at") is None,
+        "auto_logout":         s.get("auto_logout", False),
     }
 
 
@@ -66,13 +76,45 @@ def _user_filter(uid: ObjectId) -> dict:
     (newly-stored) session is ever returned.
     """
     return {"$or": [{"user_id": uid}, {"user_id": str(uid)}]}
-    
+
+
+def _auto_close_stale_sessions(uid: ObjectId):
+    """
+    Force-close this user's session(s) still open (logout_at is null) more
+    than AUTO_LOGOUT_HOURS after login_at. logout_at is set to
+    login_at + AUTO_LOGOUT_HOURS and the session is flagged auto_logout=True
+    so the UI/exports can distinguish it from a manual checkout.
+    """
+    db = get_db()
+    cutoff = datetime.utcnow() - timedelta(hours=AUTO_LOGOUT_HOURS)
+
+    stale = list(db["attendance_sessions"].find({
+        **_user_filter(uid),
+        "logout_at": None,
+        "login_at": {"$lte": cutoff},
+    }))
+
+    for s in stale:
+        login = s["login_at"]
+        login = login.replace(tzinfo=None) if login.tzinfo else login
+        forced_logout = login + timedelta(hours=AUTO_LOGOUT_HOURS)
+        db["attendance_sessions"].update_one(
+            {"_id": s["_id"]},
+            {"$set": {
+                "logout_at": forced_logout,
+                "auto_logout": True,
+                "auto_logout_reason": f"No checkout after {AUTO_LOGOUT_HOURS}h",
+            }},
+        )
+
 
 # ── GET /today ─────────────────────────────────────────────────────────────────
 @router.get("/today")
 async def get_today(current_user: dict = Depends(get_current_user)):
     db = get_db()
     uid = ObjectId(current_user["id"])
+
+    _auto_close_stale_sessions(uid)
 
     curr_ist      = now_ist()
     day_start_utc = ist_day_start(curr_ist).replace(tzinfo=None)
@@ -115,6 +157,8 @@ async def get_sessions(
     db  = get_db()
     uid = ObjectId(current_user["id"])
 
+    _auto_close_stale_sessions(uid)
+
     curr_ist = now_ist()
     y = year  or curr_ist.year
     m = month or curr_ist.month
@@ -146,6 +190,11 @@ async def checkin(
     db  = get_db()
     uid = ObjectId(current_user["id"])
 
+    # Close out any stale open session first — otherwise a genuinely
+    # forgotten checkout from 9+ hours ago would block today's new checkin
+    # with "Already checked in today", even though it should've auto-closed.
+    _auto_close_stale_sessions(uid)
+
     curr_ist      = now_ist()
     day_start_utc = ist_day_start(curr_ist).replace(tzinfo=None)
     day_end_utc   = ist_day_end(curr_ist).replace(tzinfo=None)
@@ -170,6 +219,7 @@ async def checkin(
         "ist_checkin_time":    curr_ist.strftime("%H:%M:%S"),
         "ist_date":            curr_ist.strftime("%Y-%m-%d"),
         "work_from":           getattr(data, "work_from", "office"),
+        "auto_logout":         False,
         "created_at":          now_utc,
     }
     result = db["attendance_sessions"].insert_one(session)
@@ -188,6 +238,12 @@ async def checkout(
 ):
     db  = get_db()
     uid = ObjectId(current_user["id"])
+
+    # Run the sweep before looking for an "active" session — if it's already
+    # past the 9h mark, it's no longer active and a manual checkout attempt
+    # should get the same "no active check-in" response as any other closed
+    # session, rather than silently overwriting the auto-logout.
+    _auto_close_stale_sessions(uid)
 
     curr_ist      = now_ist()
     day_start_utc = ist_day_start(curr_ist).replace(tzinfo=None)
@@ -350,6 +406,8 @@ async def get_stats(
 ):
     db  = get_db()
     uid = ObjectId(current_user["id"])
+
+    _auto_close_stale_sessions(uid)
 
     curr_ist = now_ist()
     y = year  or curr_ist.year

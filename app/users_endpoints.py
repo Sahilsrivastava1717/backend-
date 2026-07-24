@@ -37,6 +37,7 @@ def _to_user_resp(u: dict) -> dict:
         "designation": u.get("designation"),
         "temp_password": u.get("temp_password"),
         "last_login": u.get("last_login"),
+        "org_name": u.get("org_name"),
     }
 
 
@@ -124,11 +125,13 @@ async def create_user(
             raise HTTPException(400, detail="Offer code already in use")
         offer_code = code
 
-    # FIX: is_admin must reflect the selected role, not be hardcoded False.
-    # Previously every new user was saved with is_admin=False even when
-    # role == "admin", so admin-gated checks (is_admin) never matched
-    # role-based checks (role == "admin"), causing the mismatch you saw.
     is_admin_flag = (data.role == "admin")
+
+    # FIX: org_name was hardcoded as "ezsignly" here previously. It must
+    # instead be inherited from the admin creating this user — org_name is
+    # only ever set at admin-signup time, so every team member created
+    # under that admin should carry the same org_name forward.
+    org_name = current_user.get("org_name")
 
     user_doc = {
         "username": username,
@@ -144,6 +147,7 @@ async def create_user(
         "avatar_url": None,
         "job_title": None,
         "designation": None,
+        "org_name": org_name,
     }
 
     result = col.insert_one(user_doc)
@@ -172,17 +176,11 @@ async def update_role(
     except Exception:
         raise HTTPException(400, detail="Invalid user id")
 
-    # FIX: keep is_admin in sync whenever role is changed to/from "admin".
-    # Before, switching someone's role to Admin (or away from it) via the
-    # dropdown never updated is_admin, so admin-gated UI/permissions kept
-    # using the stale flag.
     update_fields = {
         "role": data.role,
         "is_admin": data.role == "admin",
     }
 
-    # Clear offer_code if role is moved away from sales (keeps data consistent
-    # with the fact that offer codes are only meaningful for sales users).
     if data.role != "sales":
         update_fields["offer_code"] = None
 

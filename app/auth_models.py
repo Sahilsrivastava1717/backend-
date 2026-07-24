@@ -24,6 +24,7 @@ class UserResponse(BaseModel):
     is_active: bool = True
     is_admin: bool = False
     role: Optional[str] = None
+    org_name: Optional[str] = None
 
     # ── Extended profile fields ──
     personal_email: Optional[str] = None
@@ -74,22 +75,3 @@ class UpdateProfileRequest(BaseModel):
     emergency_contact_name: Optional[str] = Field(None, max_length=100)
     emergency_contact_phone: Optional[str] = Field(None, max_length=30)
     emergency_contact_relation: Optional[str] = None
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-   

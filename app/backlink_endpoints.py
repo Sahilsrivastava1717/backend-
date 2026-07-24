@@ -1,5 +1,11 @@
 """
 Backlinks Endpoints — SEO/Admin only, domain-scoped like leads/tasks.
+
+Access control:
+- Only users who are admins OR have role == "seo" may use these endpoints.
+- Within that, every query is scoped to the caller's own email domain
+  (org) — an admin or SEO user from one org never sees, edits, or
+  deletes another org's backlinks, even though they're both admins.
 """
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -34,6 +40,11 @@ def _domain_of(email: str) -> str:
 
 
 def _domain_user_ids(current_user: dict) -> List[str]:
+    """
+    All user ids belonging to the caller's own email domain (org).
+    Used to scope both admins and SEO users to their own org — an
+    admin no longer sees every org's data, just their own.
+    """
     from app.mongodb import get_users_collection
     domain = _domain_of(current_user.get("email", ""))
     if not domain:
@@ -54,6 +65,24 @@ def _to_resp(d: dict) -> dict:
     for k in ("created_at", "updated_at", "last_checked_at", "fixed_at", "redo_requested_at"):
         if isinstance(d.get(k), datetime):
             d[k] = d[k].isoformat()
+    return d
+
+
+def _get_org_backlink(backlink_id: str, allowed_user_ids: List[str]) -> dict:
+    """
+    Fetch a backlink doc, but only if it belongs to someone in the
+    caller's own org (allowed_user_ids). Raises 404 for both "doesn't
+    exist" and "belongs to another org" — deliberately indistinguishable
+    so org boundaries aren't leak-able.
+    """
+    try:
+        oid = ObjectId(backlink_id)
+    except Exception:
+        raise HTTPException(400, detail="Invalid id")
+
+    d = _col().find_one({"_id": oid})
+    if not d or d.get("user_id") not in allowed_user_ids:
+        raise HTTPException(404, detail="Backlink not found")
     return d
 
 
@@ -131,10 +160,10 @@ async def list_backlinks(
 ):
     _require_seo_or_admin(current_user)
     col = _col()
-    is_admin = current_user.get("is_admin", False)
     user_ids = _domain_user_ids(current_user)
 
-    q: dict = {"user_id": {"$in": user_ids}} if not is_admin else {}
+    # Every caller — admin or SEO — is scoped to their own org's users.
+    q: dict = {"user_id": {"$in": user_ids}}
     if status and status != "all":
         q["status"] = status
     if category_id and category_id != "all":
@@ -156,7 +185,7 @@ async def list_backlinks(
     direction = 1 if sort_dir == "asc" else -1
     docs = list(col.find(q).sort(sort_key, direction).skip(page * page_size).limit(page_size))
 
-    base_q = {"user_id": {"$in": user_ids}} if not is_admin else {}
+    base_q = {"user_id": {"$in": user_ids}}
     counts = {"all": col.count_documents(base_q)}
     for s in VALID_STATUS:
         counts[s] = col.count_documents({**base_q, "status": s})
@@ -223,7 +252,12 @@ async def create_backlink(data: BacklinkIn, current_user: dict = Depends(get_cur
         "redo_requested": False, "redo_requested_at": None, "redo_note": None, "fixed_at": None,
     }
     if doc.get("live_post_url"):
-        dup = _col().find_one({"live_post_url": {"$regex": f"^{doc['live_post_url']}$", "$options": "i"}})
+        # Duplicate check scoped to the caller's own org only.
+        user_ids = _domain_user_ids(current_user)
+        dup = _col().find_one({
+            "live_post_url": {"$regex": f"^{doc['live_post_url']}$", "$options": "i"},
+            "user_id": {"$in": user_ids},
+        })
         if dup:
             raise HTTPException(400, detail="Duplicate live URL — already logged for your team.")
     result = _col().insert_one(doc)
@@ -234,15 +268,14 @@ async def create_backlink(data: BacklinkIn, current_user: dict = Depends(get_cur
 @router.patch("/{backlink_id}")
 async def update_backlink(backlink_id: str, data: BacklinkUpdate, current_user: dict = Depends(get_current_user)):
     _require_seo_or_admin(current_user)
+    user_ids = _domain_user_ids(current_user)
+    _get_org_backlink(backlink_id, user_ids)  # 404s if not this org's
+
     update = {k: v for k, v in data.dict(exclude_unset=True).items()}
     if "status" in update and update["status"] not in VALID_STATUS:
         raise HTTPException(400, detail="Invalid status")
     update["updated_at"] = datetime.now(timezone.utc)
-    try:
-        oid = ObjectId(backlink_id)
-    except Exception:
-        raise HTTPException(400, detail="Invalid id")
-    result = _col().update_one({"_id": oid}, {"$set": update})
+    result = _col().update_one({"_id": ObjectId(backlink_id)}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(404, detail="Backlink not found")
     return {"message": "Updated"}
@@ -251,6 +284,9 @@ async def update_backlink(backlink_id: str, data: BacklinkUpdate, current_user: 
 @router.post("/{backlink_id}/mark-fixed")
 async def mark_fixed(backlink_id: str, current_user: dict = Depends(get_current_user)):
     _require_seo_or_admin(current_user)
+    user_ids = _domain_user_ids(current_user)
+    _get_org_backlink(backlink_id, user_ids)  # 404s if not this org's
+
     oid = ObjectId(backlink_id)
     _col().update_one({"_id": oid}, {"$set": {
         "status": "live", "fixed_at": datetime.now(timezone.utc), "redo_requested": False,
@@ -261,6 +297,13 @@ async def mark_fixed(backlink_id: str, current_user: dict = Depends(get_current_
 @router.post("/{backlink_id}/request-redo")
 async def request_redo(backlink_id: str, data: RedoIn, current_user: dict = Depends(get_current_user)):
     _require_seo_or_admin(current_user)
+    user_ids = _domain_user_ids(current_user)
+    _get_org_backlink(backlink_id, user_ids)  # 404s if not this org's
+
+    # assigned_to must also be someone in the same org
+    if data.assigned_to not in user_ids:
+        raise HTTPException(400, detail="Can only assign to a teammate in your org")
+
     oid = ObjectId(backlink_id)
     result = _col().update_one({"_id": oid}, {"$set": {
         "redo_requested": True, "redo_requested_at": datetime.now(timezone.utc),
@@ -274,11 +317,8 @@ async def request_redo(backlink_id: str, data: RedoIn, current_user: dict = Depe
 @router.get("/redo-queue")
 async def redo_queue(current_user: dict = Depends(get_current_user)):
     _require_seo_or_admin(current_user)
-    is_admin = current_user.get("is_admin", False)
     user_ids = _domain_user_ids(current_user)
-    q = {"redo_requested": True}
-    if not is_admin:
-        q["user_id"] = {"$in": user_ids}
+    q = {"redo_requested": True, "user_id": {"$in": user_ids}}
     docs = list(_col().find(q).sort("redo_requested_at", -1))
     return [_to_resp(d) for d in docs]
 
@@ -286,6 +326,9 @@ async def redo_queue(current_user: dict = Depends(get_current_user)):
 @router.delete("/{backlink_id}")
 async def delete_backlink(backlink_id: str, current_user: dict = Depends(get_current_user)):
     _require_seo_or_admin(current_user)
+    user_ids = _domain_user_ids(current_user)
+    _get_org_backlink(backlink_id, user_ids)  # 404s if not this org's
+
     oid = ObjectId(backlink_id)
     result = _col().delete_one({"_id": oid})
     if result.deleted_count == 0:
@@ -321,9 +364,8 @@ async def check_backlinks(
 ):
     """Checks HTTP status of live_post_url (or website_url) for matching backlinks."""
     _require_seo_or_admin(current_user)
-    is_admin = current_user.get("is_admin", False)
     user_ids = _domain_user_ids(current_user)
-    q: dict = {} if is_admin else {"user_id": {"$in": user_ids}}
+    q: dict = {"user_id": {"$in": user_ids}}
     if from_date: q.setdefault("date", {})["$gte"] = from_date
     if to_date: q.setdefault("date", {})["$lte"] = to_date
     if category_ids:
@@ -368,9 +410,8 @@ async def sync_sheet(current_user: dict = Depends(get_current_user)):
 @router.get("/export.csv")
 async def export_csv(current_user: dict = Depends(get_current_user)):
     _require_seo_or_admin(current_user)
-    is_admin = current_user.get("is_admin", False)
     user_ids = _domain_user_ids(current_user)
-    q = {} if is_admin else {"user_id": {"$in": user_ids}}
+    q = {"user_id": {"$in": user_ids}}
     docs = list(_col().find(q).sort("date", -1))
     cats = {str(c["_id"]): c["name"] for c in _cat_col().find({})}
 

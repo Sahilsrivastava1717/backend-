@@ -1,6 +1,8 @@
 """
 Companies Endpoints
-Super-admin only. Manage workspaces (companies) — list, create, update.
+Admin only. Manage workspaces (companies) — list, create, update.
+Scoped per-admin: an admin only ever sees/edits the companies they created —
+one admin's companies never show up for, or can be touched by, another admin.
 """
 from fastapi import APIRouter, HTTPException, Depends
 from datetime import datetime, timezone
@@ -49,7 +51,9 @@ class CompanyUpdate(BaseModel):
 @router.get("")
 async def list_companies(current_user: dict = Depends(get_current_user)):
     _require_super_admin(current_user)
-    items = list(_col().find({}).sort("name", 1))
+    # FIX: scope to companies this admin created — previously every admin
+    # saw every company in the DB regardless of who created it.
+    items = list(_col().find({"created_by": current_user["id"]}).sort("name", 1))
     return {"companies": [_to_resp(c) for c in items]}
 
 
@@ -57,7 +61,10 @@ async def list_companies(current_user: dict = Depends(get_current_user)):
 async def create_company(data: CompanyCreate, current_user: dict = Depends(get_current_user)):
     _require_super_admin(current_user)
     slug = data.slug.strip().lower()
-    if _col().find_one({"slug": slug}):
+    # FIX: slug uniqueness scoped to this admin's own companies, not global —
+    # otherwise one admin's slug choice could block another admin from ever
+    # using the same slug for their own, unrelated company.
+    if _col().find_one({"slug": slug, "created_by": current_user["id"]}):
         raise HTTPException(400, detail="Slug already in use")
 
     now = datetime.now(timezone.utc)
@@ -83,13 +90,24 @@ async def update_company(company_id: str, data: CompanyUpdate, current_user: dic
     except Exception:
         raise HTTPException(400, detail="Invalid id")
 
+    # FIX: fetch scoped to created_by so an admin can't even discover, let
+    # alone edit, a company that isn't theirs (returns 404, not 403, to
+    # avoid confirming the id exists at all).
+    existing = _col().find_one({"_id": oid, "created_by": current_user["id"]})
+    if not existing:
+        raise HTTPException(404, detail="Company not found")
+
     update = {}
     if data.name is not None:
         update["name"] = data.name.strip()
     if data.slug is not None:
         slug = data.slug.strip().lower()
-        existing = _col().find_one({"slug": slug, "_id": {"$ne": oid}})
-        if existing:
+        conflict = _col().find_one({
+            "slug": slug,
+            "created_by": current_user["id"],
+            "_id": {"$ne": oid},
+        })
+        if conflict:
             raise HTTPException(400, detail="Slug already in use")
         update["slug"] = slug
     if data.logo_url is not None:
@@ -101,11 +119,11 @@ async def update_company(company_id: str, data: CompanyUpdate, current_user: dic
         raise HTTPException(400, detail="Nothing to update")
 
     update["updated_at"] = datetime.now(timezone.utc)
-    result = _col().update_one({"_id": oid}, {"$set": update})
+    result = _col().update_one({"_id": oid, "created_by": current_user["id"]}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(404, detail="Company not found")
 
-    c = _col().find_one({"_id": oid})
+    c = _col().find_one({"_id": oid, "created_by": current_user["id"]})
     return _to_resp(c)
 
 
@@ -116,7 +134,9 @@ async def delete_company(company_id: str, current_user: dict = Depends(get_curre
         oid = ObjectId(company_id)
     except Exception:
         raise HTTPException(400, detail="Invalid id")
-    result = _col().delete_one({"_id": oid})
+    # FIX: delete scoped to created_by — previously any admin could delete
+    # any other admin's company by id.
+    result = _col().delete_one({"_id": oid, "created_by": current_user["id"]})
     if result.deleted_count == 0:
         raise HTTPException(404, detail="Company not found")
     return {"message": "Deleted"}

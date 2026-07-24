@@ -2,6 +2,11 @@
 Employees & Consultants Endpoints
 Admin-only. Creates a login account (like admin_users.py) + an employee
 record, with optional initial documents stored as base64 in Mongo.
+
+Domain-scoped: an admin only ever sees/creates/edits/deletes employees
+whose login account belongs to the admin's own email domain (org).
+Admins from a different organization (different email domain) cannot
+see, open, update, or delete another org's employees.
 """
 from fastapi import APIRouter, HTTPException, Depends
 from datetime import datetime, timezone
@@ -48,6 +53,40 @@ def _log_activity(employee_id: str, actor_id: str, type_: str, meta: dict = None
     })
 
 
+def _domain_user_ids(domain: str) -> set:
+    """All user ids (as strings) whose email belongs to this domain."""
+    users_col = get_users_collection()
+    if not domain:
+        return set()
+    return {
+        str(u["_id"])
+        for u in users_col.find({"email": {"$regex": f"@{domain}$", "$options": "i"}})
+    }
+
+
+def _get_org_employee(employee_id: str, admin_domain: str) -> dict:
+    """
+    Fetch an employee doc, but only if it belongs to the admin's own
+    domain (i.e. the employee's linked user account is same-domain).
+    Raises 404 for both "doesn't exist" and "belongs to another org" —
+    deliberately indistinguishable so org boundaries aren't leak-able.
+    """
+    try:
+        oid = ObjectId(employee_id)
+    except Exception:
+        raise HTTPException(400, detail="Invalid id")
+
+    e = _emp_col().find_one({"_id": oid})
+    if not e:
+        raise HTTPException(404, detail="Employee not found")
+
+    allowed_ids = _domain_user_ids(admin_domain)
+    if not e.get("user_id") or e["user_id"] not in allowed_ids:
+        raise HTTPException(404, detail="Employee not found")
+
+    return e
+
+
 class DocumentIn(BaseModel):
     doc_type: str = "offer_letter"
     title: str
@@ -90,7 +129,11 @@ async def list_employees(current_user: dict = Depends(get_current_user)):
     _require_admin(current_user)
     db = get_db()
 
-    emps = list(_emp_col().find({}).sort("created_at", -1))
+    admin_domain = _domain_of(current_user.get("email", ""))
+    allowed_ids = _domain_user_ids(admin_domain)
+
+    # Only employees whose linked user account is in the admin's own domain.
+    emps = list(_emp_col().find({"user_id": {"$in": list(allowed_ids)}}).sort("created_at", -1))
     user_ids = [e["user_id"] for e in emps if e.get("user_id")]
     users = {str(u["_id"]): u for u in db["users"].find({"_id": {"$in": [ObjectId(uid) for uid in user_ids]}})}
 
@@ -190,13 +233,8 @@ async def list_managers(current_user: dict = Depends(get_current_user)):
 async def get_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
     _require_admin(current_user)
     db = get_db()
-    try:
-        oid = ObjectId(employee_id)
-    except Exception:
-        raise HTTPException(400, detail="Invalid id")
-    e = _emp_col().find_one({"_id": oid})
-    if not e:
-        raise HTTPException(404, detail="Employee not found")
+    admin_domain = _domain_of(current_user.get("email", ""))
+    e = _get_org_employee(employee_id, admin_domain)
 
     u = db["users"].find_one({"_id": ObjectId(e["user_id"])}) if e.get("user_id") else None
     docs = list(_doc_col().find({"employee_id": employee_id}).sort("created_at", -1))
@@ -214,6 +252,9 @@ async def get_employee(employee_id: str, current_user: dict = Depends(get_curren
 @router.patch("/{employee_id}")
 async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: dict = Depends(get_current_user)):
     _require_admin(current_user)
+    admin_domain = _domain_of(current_user.get("email", ""))
+    _get_org_employee(employee_id, admin_domain)  # 404s if not this org's
+
     update = {k: v for k, v in data.dict(exclude_unset=True).items()}
     update["updated_at"] = datetime.now(timezone.utc)
     result = _emp_col().update_one({"_id": ObjectId(employee_id)}, {"$set": update})
@@ -226,6 +267,9 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
 @router.post("/{employee_id}/mark-onboarded")
 async def mark_onboarded(employee_id: str, current_user: dict = Depends(get_current_user)):
     _require_admin(current_user)
+    admin_domain = _domain_of(current_user.get("email", ""))
+    _get_org_employee(employee_id, admin_domain)  # 404s if not this org's
+
     result = _emp_col().update_one({"_id": ObjectId(employee_id)}, {"$set": {"status": "active", "updated_at": datetime.now(timezone.utc)}})
     if result.matched_count == 0:
         raise HTTPException(404, detail="Employee not found")
@@ -236,6 +280,9 @@ async def mark_onboarded(employee_id: str, current_user: dict = Depends(get_curr
 @router.delete("/{employee_id}")
 async def delete_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
     _require_admin(current_user)
+    admin_domain = _domain_of(current_user.get("email", ""))
+    _get_org_employee(employee_id, admin_domain)  # 404s if not this org's
+
     result = _emp_col().delete_one({"_id": ObjectId(employee_id)})
     if result.deleted_count == 0:
         raise HTTPException(404, detail="Employee not found")
@@ -247,8 +294,9 @@ async def delete_employee(employee_id: str, current_user: dict = Depends(get_cur
 @router.post("/{employee_id}/documents", status_code=201)
 async def add_document(employee_id: str, data: DocumentIn, current_user: dict = Depends(get_current_user)):
     _require_admin(current_user)
-    if not _emp_col().find_one({"_id": ObjectId(employee_id)}):
-        raise HTTPException(404, detail="Employee not found")
+    admin_domain = _domain_of(current_user.get("email", ""))
+    _get_org_employee(employee_id, admin_domain)  # 404s if not this org's
+
     doc = {
         "employee_id": employee_id, "doc_type": data.doc_type, "title": data.title,
         "file_data": data.file_data, "file_name": data.file_name, "url": data.url,
@@ -263,6 +311,9 @@ async def add_document(employee_id: str, data: DocumentIn, current_user: dict = 
 @router.delete("/{employee_id}/documents/{doc_id}")
 async def delete_document(employee_id: str, doc_id: str, current_user: dict = Depends(get_current_user)):
     _require_admin(current_user)
+    admin_domain = _domain_of(current_user.get("email", ""))
+    _get_org_employee(employee_id, admin_domain)  # 404s if not this org's
+
     result = _doc_col().delete_one({"_id": ObjectId(doc_id), "employee_id": employee_id})
     if result.deleted_count == 0:
         raise HTTPException(404, detail="Document not found")

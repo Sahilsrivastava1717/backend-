@@ -35,7 +35,7 @@ from app.standup_feed_endpoints import router as standup_feed_router
 from app.team_hub_endpoints import router as team_hub_router
 from app.company_endpoints import router as company_router
 from app.notifications_endpoints import router as notifications_router
-
+from app.admin_signup_endpoints import router as admin_signup_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -95,6 +95,7 @@ app.include_router(standup_feed_router)
 app.include_router(team_hub_router)
 app.include_router(company_router)
 app.include_router(notifications_router)
+app.include_router(admin_signup_router)
 
 @app.get("/")
 async def root():

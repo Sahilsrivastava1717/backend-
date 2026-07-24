@@ -45,8 +45,8 @@ def _to_user_response(user: dict) -> UserResponse:
         emergency_contact_relation=user.get("emergency_contact_relation"),
         is_admin=user.get("is_admin", False),
         role=user.get("role"),
+        org_name=user.get("org_name"),
     )
-
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(data: UserRegister):

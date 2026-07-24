@@ -33,6 +33,11 @@ meet_link is null and meet_link_is_real is false, so the frontend shows a
 "Connect Google" banner and disables the Join button instead of linking to
 a broken/fake meeting URL.
 
+meet_link_error captures WHY a real link couldn't be created (no admin
+connected, refresh token invalid/revoked, Calendar API insert failed, etc.)
+so the frontend can show something more useful than a generic message when
+the banner says "connected" but creation still fails.
+
 Mount in main.py:
     from app.routers import meetings
     app.include_router(meetings.router)
@@ -110,6 +115,7 @@ def _to_resp(m: dict) -> dict:
         "duration_minutes": m.get("duration_minutes", 30),
         "meet_link": m.get("meet_link"),
         "meet_link_is_real": m.get("meet_link_is_real", False),
+        "meet_link_error": m.get("meet_link_error"),
         "attendees": m.get("attendees", []),
         "external_emails": m.get("external_emails", []),
         "agenda": m.get("agenda"),
@@ -228,21 +234,63 @@ async def google_callback(code: str, state: str):
 
 @router.get("/google/status")
 async def google_status(current_user: dict = Depends(get_current_user)):
-    """Frontend checks this to show 'Connect Google' vs 'Connected'."""
+    """
+    Frontend checks this to show 'Connect Google' vs 'Connected'. Actually
+    verifies the stored refresh token still works (Google can invalidate it
+    server-side — e.g. testing-mode consent expiring after 7 days, or the
+    user revoking access) rather than just checking a field exists, so the
+    banner doesn't lie about being connected when creation would fail.
+    """
     users_col = get_users_collection()
     u = users_col.find_one({"_id": ObjectId(current_user["id"])})
-    connected = bool(u and u.get("google_oauth", {}).get("refresh_token"))
-    return {"connected": connected}
+    g = (u or {}).get("google_oauth")
+    if not g or not g.get("refresh_token"):
+        return {"connected": False}
+
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request as GoogleAuthRequest
+
+    creds = Credentials(
+        None,
+        refresh_token=g["refresh_token"],
+        token_uri=g["token_uri"],
+        client_id=g["client_id"],
+        client_secret=g["client_secret"],
+        scopes=g["scopes"],
+    )
+    try:
+        creds.refresh(GoogleAuthRequest())
+        return {"connected": True}
+    except Exception as e:
+        # Token is stored but Google has invalidated it — clear it so the
+        # banner correctly flips back to "Connect Google" instead of lying.
+        print(f"Stored Google token for {u.get('email')} is invalid: {e}")
+        users_col.update_one({"_id": u["_id"]}, {"$unset": {"google_oauth": ""}})
+        return {"connected": False, "reason": "token_expired_or_revoked"}
+
+
+@router.post("/google/disconnect")
+async def google_disconnect(current_user: dict = Depends(get_current_user)):
+    """Manually clear this admin's stored Google credentials."""
+    _require_admin(current_user)
+    users_col = get_users_collection()
+    users_col.update_one({"_id": ObjectId(current_user["id"])}, {"$unset": {"google_oauth": ""}})
+    return {"message": "Disconnected"}
 
 
 def _get_calendar_service_for_admin():
-    """Find any admin with a connected Google account and build a Calendar API client."""
+    """
+    Find any admin with a connected Google account and build a Calendar API
+    client. Returns (service, error) — error is None on success, or a short
+    string describing why no working service could be built.
+    """
     users_col = get_users_collection()
     admin_with_google = users_col.find_one({"is_admin": True, "google_oauth.refresh_token": {"$exists": True}})
     if not admin_with_google:
-        return None
+        return None, "no_admin_connected"
 
     from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request as GoogleAuthRequest
     from googleapiclient.discovery import build
 
     g = admin_with_google["google_oauth"]
@@ -254,7 +302,20 @@ def _get_calendar_service_for_admin():
         client_secret=g["client_secret"],
         scopes=g["scopes"],
     )
-    return build("calendar", "v3", credentials=creds)
+    try:
+        # Force a refresh now (rather than lazily on first API call) so a
+        # revoked/expired refresh token surfaces as a clear error here,
+        # instead of failing deep inside events().insert() with a vaguer trace.
+        creds.refresh(GoogleAuthRequest())
+    except Exception as e:
+        print(f"Google credential refresh failed for admin {admin_with_google.get('email')}: {e}")
+        return None, f"refresh_failed: {e}"
+
+    try:
+        return build("calendar", "v3", credentials=creds), None
+    except Exception as e:
+        print(f"Failed to build Calendar service: {e}")
+        return None, f"build_failed: {e}"
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -398,8 +459,11 @@ async def create_meeting(data: CreateMeetingRequest, current_user: dict = Depend
     meet_link = None
     meet_link_is_real = False
     google_event_id = None
+    meet_link_error = None
 
-    service = _get_calendar_service_for_admin()
+    service, service_error = _get_calendar_service_for_admin()
+    if service_error:
+        meet_link_error = service_error
     if service:
         try:
             event_body = {
@@ -424,11 +488,14 @@ async def create_meeting(data: CreateMeetingRequest, current_user: dict = Depend
             meet_link = created.get("hangoutLink")
             google_event_id = created.get("id")
             meet_link_is_real = bool(meet_link)
+            if not meet_link:
+                meet_link_error = "event_created_but_no_hangout_link"
         except Exception as e:
             # Surfacing this in logs is critical: a silent failure here is exactly
             # what produces the "Check your meeting code" experience — the meeting
             # gets saved but with no usable link, and nobody knows why.
             print(f"Google Calendar event creation failed: {e}")
+            meet_link_error = f"event_insert_failed: {e}"
 
     doc = {
         "title": data.title.strip(),
@@ -438,6 +505,7 @@ async def create_meeting(data: CreateMeetingRequest, current_user: dict = Depend
         "duration_minutes": data.duration_minutes,
         "meet_link": meet_link,
         "meet_link_is_real": meet_link_is_real,
+        "meet_link_error": meet_link_error,
         "google_event_id": google_event_id,
         "attendees": attendees,
         "external_emails": [e.strip() for e in data.external_emails if e.strip()],
@@ -507,7 +575,7 @@ async def delete_meeting(meeting_id: str, current_user: dict = Depends(get_curre
         raise HTTPException(404, detail="Meeting not found")
 
     if meeting.get("google_event_id"):
-        service = _get_calendar_service_for_admin()
+        service, _ = _get_calendar_service_for_admin()
         if service:
             try:
                 service.events().delete(calendarId="primary", eventId=meeting["google_event_id"], sendUpdates="all").execute()
